@@ -134,7 +134,7 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
 
 .stats-row{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-bottom:14px;}
 .stat-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px;text-align:center;box-shadow:var(--shadow);}
-.stat-num{font-family:'DM Serif Display',serif;font-size:26px;color:var(--text);}
+.stat-num{font-family:DM Serif Display,serif;font-size:26px;color:var(--text);}
 .stat-lbl{font-size:11px;color:var(--text-muted);margin-top:2px;font-weight:500;}
 
 .booking-card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:10px;box-shadow:var(--shadow);}
@@ -193,6 +193,7 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
 <div class="tab-wrap">
   <div class="tabs">
     <button class="tab active" id="tab-new" onclick="switchTab('new')">Nueva cita</button>
+    <button class="tab" id="tab-agenda" onclick="switchTab('agenda')">Agenda</button>
     <button class="tab" id="tab-bookings" onclick="switchTab('bookings')">Todas las citas</button>
   </div>
 </div>
@@ -225,9 +226,12 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
           <label>Fecha</label>
           <div class="date-check-row">
             <input type="date" id="date" oninput="clearAvail()">
-            <button class="btn-check" onclick="checkAvail()">Verificar disponibilidad</button>
+            <button class="btn-check" onclick="checkAvail()">Ver eventos del día</button>
           </div>
           <div class="avail-msg" id="availMsg"></div>
+          <div id="dayEventsBox" style="display:none;margin-top:10px;background:var(--card);border:1px solid var(--border);border-radius:var(--radius-sm);overflow:hidden;">
+            <div id="dayEventsList"></div>
+          </div>
         </div>
         <div class="field span-2">
           <div class="time-section">
@@ -369,7 +373,29 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);min
   <div class="page" id="page-bookings">
     <div class="stats-row" id="statsRow"></div>
     <div id="bookingsList"></div>
-  </div></div>
+  </div>
+
+
+  <div class="page" id="page-agenda">
+    <div class="card" style="text-align:center;">
+      <div class="section-label" style="text-align:left;">¿Está disponible este día?</div>
+      <input type="date" id="agendaDate" oninput="checkAgendaDay()"
+        style="width:100%;padding:14px;border:1px solid var(--border-strong);border-radius:var(--radius-sm);font-size:18px;font-family:'DM Sans',sans-serif;color:var(--text);background:var(--bg);text-align:center;margin-bottom:12px;-webkit-appearance:none;">
+      <div id="agendaStatus"></div>
+    </div>
+    <div id="agendaDayBox" style="display:none;">
+      <div class="card">
+        <div class="section-label">Eventos agendados</div>
+        <div id="agendaDayList"></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="section-label">Próximas citas</div>
+      <div id="agendaUpcoming"></div>
+    </div>
+  </div>
+
+</div>
 
 <script>
 var selectedService = '';
@@ -394,11 +420,12 @@ function updateCount() {
 }
 
 function switchTab(tab) {
-  ['new','bookings'].forEach(function(t) {
+  ['new','agenda','bookings'].forEach(function(t) {
     document.getElementById('tab-' + t).classList.toggle('active', tab === t);
     document.getElementById('page-' + t).classList.toggle('active', tab === t);
   });
   if (tab === 'bookings') renderBookings();
+  if (tab === 'agenda') renderAgendaUpcoming();
 }
 
 function fmtPhone(input) {
@@ -441,12 +468,18 @@ function setPaid(val) {
 
 function parseHora(str) {
   if (!str) return null;
-  var clean = str.trim().toUpperCase();
-  var m = clean.match(/^(\d{1,2})(?::(\d{2}))?\s*(AM|PM)?$/);
+  var clean = str.trim().toUpperCase().replace(/\s+/g,'');
+  var m = clean.match(/^(\d{1,2})(?::(\d{2}))?(AM|PM)?$/);
   if (!m) return null;
-  var h = parseInt(m[1]), min = m[2] ? parseInt(m[2]) : 0, period = m[3];
+  var h = parseInt(m[1]);
+  var min = m[2] ? parseInt(m[2]) : 0;
+  var period = m[3];
   if (period === 'PM' && h !== 12) h += 12;
   if (period === 'AM' && h === 12) h = 0;
+  // No AM/PM given - assume PM if hour is 1-7, AM if 8-12
+  if (!period) {
+    if (h >= 1 && h <= 7) h += 12;
+  }
   return h * 60 + min;
 }
 
@@ -457,8 +490,9 @@ function calcDuration() {
   if (!s || !e) { d.innerHTML = ''; return; }
   var sm = parseHora(s), em = parseHora(e);
   if (sm === null || em === null) { d.innerHTML = ''; return; }
+  // If end is before or equal to start, assume it crosses midnight
+  if (em <= sm) em += 24 * 60;
   var diff = em - sm;
-  if (diff <= 0) { d.innerHTML = '<span style="color:var(--red)">La hora de fin debe ser después del inicio</span>'; return; }
   var h = Math.floor(diff/60), m = diff % 60;
   d.innerHTML = '<span>Duración: ' + (h ? h + 'h' : '') + (m ? ' ' + m + 'm' : '') + '</span>';
 }
@@ -513,21 +547,146 @@ function fmtDate(date, ts, te) {
   return dp + ' · ' + ts + ' – ' + te;
 }
 
-function checkAvail() {
-  var date = document.getElementById('date').value;
-  var msg = document.getElementById('availMsg');
-  if (!date) { msg.textContent = 'Por favor selecciona una fecha primero.'; msg.className = 'avail-msg conflict'; return; }
-  var hits = bookings.filter(function(b) { return b.date === date; });
-  if (hits.length) {
-    msg.textContent = '⚠ Ya reservado: ' + hits.map(function(b) { return b.name + (b.timeInicio ? ' a las ' + b.timeInicio : ''); }).join(', ');
-    msg.className = 'avail-msg conflict';
-  } else {
-    msg.textContent = '✓ ¡Esta fecha está disponible!';
-    msg.className = 'avail-msg free';
+
+function renderAgendaUpcoming() {
+  var t = todayStr();
+  var upcoming = bookings.filter(function(b) { return b.date >= t; });
+  upcoming.sort(function(a,b) { return (a.date||'') > (b.date||'') ? 1 : -1; });
+  var el = document.getElementById('agendaUpcoming');
+  if (!el) return;
+  if (!upcoming.length) {
+    el.innerHTML = '<div style="text-align:center;padding:20px;color:var(--text-muted);font-size:14px;">Sin citas próximas.</div>';
+    return;
   }
+
+  var groups = {};
+  var groupOrder = [];
+  upcoming.forEach(function(b) {
+    var d = new Date(b.date + 'T12:00:00');
+    var key = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0');
+    var label = d.toLocaleDateString('es-MX', {month:'long', year:'numeric'});
+    label = label.charAt(0).toUpperCase() + label.slice(1);
+    if (!groups[key]) { groups[key] = []; groupOrder.push({key:key, label:label}); }
+    groups[key].push(b);
+  });
+
+  el.innerHTML = groupOrder.map(function(g) {
+    var items = groups[g.key];
+    return '<div style="margin-bottom:16px;">' +
+      '<div style="font-size:12px;font-weight:700;color:var(--accent);text-transform:uppercase;letter-spacing:0.08em;padding:8px 0 6px;border-bottom:2px solid var(--accent-light);margin-bottom:4px;">' + g.label + ' (' + items.length + ')</div>' +
+      items.map(function(b, i) {
+        var d = new Date(b.date + 'T12:00:00');
+        var timeStr = b.timeInicio ? b.timeInicio + (b.timeFin ? ' – ' + b.timeFin : '') : '';
+        var detailId = 'detail-' + b.id;
+        var details =
+          (b.phone ? '<div style="font-size:13px;color:var(--text-muted);padding:2px 0;">📞 ' + b.phone + '</div>' : '') +
+          (b.email ? '<div style="font-size:13px;color:var(--text-muted);padding:2px 0;">✉️ ' + b.email + '</div>' : '') +
+          (b.address ? '<div style="font-size:13px;color:var(--text-muted);padding:2px 0;">📍 ' + b.address + '</div>' : '') +
+          (b.setting ? '<div style="font-size:13px;color:var(--text-muted);padding:2px 0;">🏠 ' + (b.setting==='indoor'?'Interior':'Al aire libre') + '</div>' : '') +
+          (b.guests ? '<div style="font-size:13px;color:var(--text-muted);padding:2px 0;">👥 ' + b.guests + ' invitados</div>' : '') +
+          (b.carts.length ? '<div style="font-size:13px;color:var(--text-muted);padding:2px 0;">🛒 ' + b.carts.join(', ') + '</div>' : '') +
+          (b.totalPrice ? '<div style="font-size:13px;color:var(--text-muted);padding:2px 0;">💰 Total: $' + b.totalPrice.toFixed(2) + (b.deposit ? ' · Depósito: $' + b.deposit.toFixed(2) + (b.depositPaid ? ' ✓' : ' ⚠️') : '') + '</div>' : '') +
+          (b.remaining ? '<div style="font-size:13px;color:var(--red);padding:2px 0;">🔴 Saldo: $' + b.remaining.toFixed(2) + '</div>' : '') +
+          (b.notes ? '<div style="font-size:13px;color:var(--text-muted);padding:4px 0;font-style:italic;">📝 ' + b.notes + '</div>' : '');
+        return '<div style="border-bottom:' + (i < items.length-1 ? '1px solid var(--border)' : 'none') + ';">' +
+          '<div style="display:flex;align-items:center;gap:12px;padding:10px 0;cursor:pointer;" onclick="toggleDetail(\'' + detailId + '\')">' +
+            '<div style="background:var(--accent-light);border-radius:var(--radius-sm);padding:6px 10px;text-align:center;flex-shrink:0;min-width:48px;">' +
+              '<div style="font-size:10px;font-weight:700;color:var(--accent-dark);text-transform:uppercase;">' + d.toLocaleDateString('es-MX',{weekday:'short'}) + '</div>' +
+              '<div style="font-size:20px;font-weight:700;color:var(--accent);line-height:1;">' + d.getDate() + '</div>' +
+            '</div>' +
+            '<div style="flex:1;min-width:0;">' +
+              '<div style="font-size:14px;font-weight:700;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + b.name + '</div>' +
+              '<div style="font-size:12px;color:var(--text-muted);">' + (timeStr ? timeStr + (b.service ? ' · ' : '') : '') + (b.service || '') + '</div>' +
+            '</div>' +
+            '<div style="font-size:18px;color:var(--text-muted);" id="arrow-' + detailId + '">›</div>' +
+          '</div>' +
+          '<div id="' + detailId + '" style="display:none;padding:10px 14px;background:var(--bg);border-radius:var(--radius-sm);margin-bottom:10px;">' +
+            details +
+          '</div>' +
+        '</div>';
+      }).join('') +
+    '</div>';
+  }).join('');
 }
 
-function clearAvail() { document.getElementById('availMsg').className = 'avail-msg'; }
+function toggleDetail(id) {
+  var el = document.getElementById(id);
+  var arrow = document.getElementById('arrow-' + id);
+  if (!el) return;
+  var open = el.style.display === 'none';
+  el.style.display = open ? 'block' : 'none';
+  if (arrow) arrow.textContent = open ? '⌄' : '›';
+}
+
+function goToNew() { switchTab("new"); }
+
+function checkAgendaDay() {
+  var date = document.getElementById('agendaDate').value;
+  var status = document.getElementById('agendaStatus');
+  var box = document.getElementById('agendaDayBox');
+  var list = document.getElementById('agendaDayList');
+  if (!date) { status.innerHTML = ''; box.style.display = 'none'; return; }
+
+  var hits = bookings.filter(function(b) { return b.date === date; });
+  hits.sort(function(a,b) { return (a.timeInicio||'') > (b.timeInicio||'') ? 1 : -1; });
+
+  if (!hits.length) {
+    status.innerHTML =
+      '<div style="padding:16px;background:var(--green-light);border-radius:var(--radius-sm);border:1px solid rgba(61,191,122,0.3);text-align:center;">' +
+        '<div style="font-size:28px;margin-bottom:6px;">✅</div>' +
+        '<div style="font-size:17px;font-weight:700;color:var(--green);">¡Día disponible!</div>' +
+        '<div style="font-size:13px;color:var(--green);margin-top:4px;">No hay eventos agendados.</div>' +
+        '<button onclick="goToNew()" style="margin-top:12px;padding:10px 20px;background:var(--green);color:#fff;border:none;border-radius:var(--radius-sm);font-size:14px;font-weight:600;cursor:pointer;">+ Agendar cita</button>' +
+      '</div>';
+    box.style.display = 'none';
+    return;
+  }
+
+  var hasConflict = hits.some(function(b) { return checkTimeOverlap(b, hits.filter(function(x){ return x.id !== b.id; })); });
+
+  status.innerHTML =
+    '<div style="padding:16px;background:var(--red-light);border-radius:var(--radius-sm);border:1px solid rgba(224,85,85,0.3);text-align:center;">' +
+      '<div style="font-size:28px;margin-bottom:6px;">' + (hasConflict ? '⚠️' : '📋') + '</div>' +
+      '<div style="font-size:17px;font-weight:700;color:var(--red);">' + hits.length + (hits.length === 1 ? ' evento agendado' : ' eventos agendados') + '</div>' +
+      '<div style="font-size:13px;color:var(--red);margin-top:4px;">' + (hasConflict ? '¡Hay conflicto de horarios!' : 'Ver detalles abajo.') + '</div>' +
+    '</div>';
+
+  box.style.display = 'block';
+  list.innerHTML = hits.map(function(b, i) {
+    var timeStr = b.timeInicio ? b.timeInicio + (b.timeFin ? ' – ' + b.timeFin : '') : 'Sin hora';
+    var overlap = checkTimeOverlap(b, hits.filter(function(x){ return x.id !== b.id; }));
+    return '<div style="padding:14px;border-bottom:' + (i < hits.length-1 ? '1px solid var(--border)' : 'none') + ';">' +
+      '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;">' +
+        '<span style="font-size:16px;font-weight:700;color:var(--text);">' + b.name + '</span>' +
+        (overlap ? '<span style="font-size:11px;font-weight:700;color:var(--red);background:var(--red-light);padding:3px 8px;border-radius:10px;">⚠ Conflicto</span>' : '<span style="font-size:11px;font-weight:700;color:var(--green);background:var(--green-light);padding:3px 8px;border-radius:10px;">✓ OK</span>') +
+      '</div>' +
+      '<div style="font-size:13px;color:var(--text-muted);margin-bottom:2px;">🕐 ' + timeStr + '</div>' +
+      (b.service ? '<div style="font-size:13px;color:var(--text-muted);margin-bottom:2px;">🎉 ' + b.service + '</div>' : '') +
+      (b.carts.length ? '<div style="font-size:13px;color:var(--text-muted);margin-bottom:2px;">🛒 ' + b.carts.join(', ') + '</div>' : '') +
+      (b.address ? '<div style="font-size:13px;color:var(--text-muted);margin-bottom:2px;">📍 ' + b.address + '</div>' : '') +
+      (b.guests ? '<div style="font-size:13px;color:var(--text-muted);">👥 ' + b.guests + ' invitados</div>' : '') +
+    '</div>';
+  }).join('');
+}
+
+function checkTimeOverlap(booking, others) {
+  if (!booking.timeInicio) return false;
+  var startA = parseHora(booking.timeInicio);
+  var endA = booking.timeFin ? parseHora(booking.timeFin) : (startA ? startA + 180 : null);
+  if (startA === null) return false;
+  return others.some(function(b) {
+    if (!b.timeInicio) return false;
+    var startB = parseHora(b.timeInicio);
+    var endB = b.timeFin ? parseHora(b.timeFin) : (startB ? startB + 180 : null);
+    if (startB === null) return false;
+    return startA < endB && startB < endA;
+  });
+}
+
+function clearAvail() {
+  document.getElementById('availMsg').className = 'avail-msg';
+  document.getElementById('dayEventsBox').style.display = 'none';
+}
 
 function toggleBox(id) {
   ['smsBox','calBox','emailBox','shareSmsBoc','shareEmailBox'].forEach(function(b) {
@@ -537,25 +696,78 @@ function toggleBox(id) {
   });
 }
 
-function buildSmsBody(d) {
-  var lines = ['🛒 CITA ENCHILADOS SNACK BAR', ''];
-  lines.push('👤 ' + d.name);
-  if (d.phone) lines.push('📞 ' + d.phone);
-  if (d.email) lines.push('✉️ ' + d.email);
-  if (d.address) lines.push('📍 ' + d.address);
-  if (d.setting) lines.push('🏠 ' + (d.setting === 'indoor' ? 'Interior' : 'Al aire libre'));
-  if (d.guests) lines.push('👥 ' + d.guests + ' invitados');
+function checkAvail() {
+  var date = document.getElementById('date').value;
+  var msg = document.getElementById('availMsg');
+  var box = document.getElementById('dayEventsBox');
+  var list = document.getElementById('dayEventsList');
+  if (!date) { msg.textContent = 'Por favor selecciona una fecha primero.'; msg.className = 'avail-msg conflict'; if(box) box.style.display='none'; return; }
+  var hits = bookings.filter(function(b) { return b.date === date; });
+  hits.sort(function(a,b) { return (a.timeInicio||'') > (b.timeInicio||'') ? 1 : -1; });
+  if (!hits.length) {
+    msg.textContent = '✓ ¡Esta fecha está disponible!';
+    msg.className = 'avail-msg free';
+    if(box) box.style.display = 'none';
+    return;
+  }
+  msg.textContent = '⚠ ' + hits.length + (hits.length === 1 ? ' evento agendado' : ' eventos agendados') + ' este día';
+  msg.className = 'avail-msg conflict';
+  if (box && list) {
+    box.style.display = 'block';
+    list.innerHTML = hits.map(function(b, i) {
+      var timeStr = b.timeInicio ? b.timeInicio + (b.timeFin ? ' – ' + b.timeFin : '') : 'Sin hora';
+      var overlap = checkTimeOverlap(b, hits.filter(function(x){ return x.id !== b.id; }));
+      return '<div style="padding:12px 14px;border-bottom:' + (i < hits.length-1 ? '1px solid var(--border)' : 'none') + ';">' +
+        '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;">' +
+          '<span style="font-weight:700;font-size:14px;color:var(--text);">' + b.name + '</span>' +
+          (overlap ? '<span style="font-size:11px;font-weight:700;color:var(--red);background:var(--red-light);padding:2px 8px;border-radius:10px;">⚠ Conflicto</span>' : '<span style="font-size:11px;font-weight:700;color:var(--green);background:var(--green-light);padding:2px 8px;border-radius:10px;">✓ OK</span>') +
+        '</div>' +
+        '<div style="font-size:13px;color:var(--text-muted);">🕐 ' + timeStr + '</div>' +
+        (b.service ? '<div style="font-size:13px;color:var(--text-muted);">🎉 ' + b.service + '</div>' : '') +
+      '</div>';
+    }).join('');
+  }
+}
+
+function buildFullSummary(d) {
+  var lines = ['🛒 ENCHILADOS SNACK BAR', ''];
+  lines.push('Hola ' + d.name.split(' ')[0] + '! Aquí están los detalles de tu reservación:');
   lines.push('');
-  lines.push('📅 ' + fmtDate(d.date, d.timeInicio, d.timeFin));
-  if (d.service) lines.push('🎉 ' + d.service);
-  if (d.carts.length) lines.push('🛒 Carritos: ' + d.carts.join(', '));
+  lines.push('📅 Fecha: ' + fmtDate(d.date, d.timeInicio, d.timeFin));
+  if (d.service) lines.push('🎉 Servicio: ' + d.service);
+  if (d.carts && d.carts.length) lines.push('🛒 Carritos: ' + d.carts.join(', '));
+  if (d.address) lines.push('📍 Lugar: ' + d.address);
+  if (d.setting) lines.push('🏠 Ambiente: ' + (d.setting === 'indoor' ? 'Interior' : 'Al aire libre'));
+  if (d.guests) lines.push('👥 Invitados: ' + d.guests);
   lines.push('');
-  if (d.totalPrice) lines.push('💰 Total: $' + d.totalPrice.toFixed(2));
-  if (d.deposit) lines.push('💵 Depósito: $' + d.deposit.toFixed(2) + ' — ' + (d.depositPaid ? 'PAGADO ✓' : 'NO PAGADO ⚠️'));
-  if (d.remaining) lines.push('🔴 Saldo pendiente: $' + d.remaining.toFixed(2));
-  if (d.notes) { lines.push(''); lines.push('📝 ' + d.notes); }
+  if (d.totalPrice) lines.push('💰 Total del paquete: $' + d.totalPrice.toFixed(2));
+  if (d.deposit) lines.push('💵 Depósito: $' + d.deposit.toFixed(2) + (d.depositPaid ? ' ✓ Pagado' : ' — Pendiente'));
+  if (d.remaining) lines.push('🔴 Saldo restante: $' + d.remaining.toFixed(2));
+  if (d.notes) { lines.push(''); lines.push('📝 Notas: ' + d.notes); }
+  lines.push('');
+  lines.push('¡Gracias por tu reservación! 💕');
+  lines.push('— Enchilados Snack Bar');
   return lines.join('\n');
 }
+
+function prepareShareSms(e) {
+  var d = getForm();
+  var phone = document.getElementById('sharePhone').value.replace(/\D/g,'');
+  var body = encodeURIComponent(buildFullSummary(d));
+  var isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
+  var sep = isIos ? '&' : '?';
+  document.getElementById('shareSmsLink').href = 'sms:' + phone + sep + 'body=' + body;
+}
+
+function prepareShareEmail(e) {
+  var d = getForm();
+  var to = document.getElementById('shareEmail').value;
+  var subj = encodeURIComponent('Reservación: ' + d.name + (d.service ? ' — ' + d.service : '') + ' | ' + fmtDate(d.date, d.timeInicio, d.timeFin));
+  var body = encodeURIComponent(buildFullSummary(d));
+  var cc = d.email ? '&cc=' + encodeURIComponent(d.email) : '';
+  document.getElementById('shareEmailLink').href = 'mailto:' + encodeURIComponent(to) + '?subject=' + subj + cc + '&body=' + body;
+}
+
 
 function prepareSms(e) {
   var d = getForm();
@@ -666,172 +878,125 @@ function toggleDepositPaid(id) {
 
 function renderBookings() {
   var t = todayStr();
-  var upcoming = bookings.filter(function(b) { return b.date >= t; }).length;
-  var unpaid = bookings.filter(function(b) { return b.deposit && !b.depositPaid; }).length;
-  document.getElementById('statsRow').innerHTML =
-    '<div class="stat-card"><div class="stat-num">' + bookings.length + '</div><div class="stat-lbl">Total</div></div>' +
-    '<div class="stat-card"><div class="stat-num">' + upcoming + '</div><div class="stat-lbl">Próximas</div></div>' +
-    '<div class="stat-card"><div class="stat-num">' + unpaid + '</div><div class="stat-lbl">Depósitos</div></div>';
-  if (!bookings.length) {
-    document.getElementById('bookingsList').innerHTML = '<div class="empty"><div class="empty-icon">📋</div><p>Sin citas aún.<br>¡Guarda tu primera cita!</p></div>';
-    return;
-  }
-  var sorted = bookings.slice().sort(function(a,b) { return (a.date||'') > (b.date||'') ? 1 : -1; });
-  document.getElementById('bookingsList').innerHTML = sorted.map(function(b) {
-    return '<div class="booking-card">' +
-      '<div class="bk-name">' + b.name + '</div>' +
-      '<div class="bk-date">' + fmtDate(b.date, b.timeInicio, b.timeFin) + '</div>' +
-      '<div class="bk-tags">' +
-        (b.service ? '<span class="tag tag-service">' + b.service + '</span>' : '') +
-        (b.deposit ? '<span class="tag ' + (b.depositPaid ? 'tag-paid' : 'tag-unpaid') + '">' + (b.depositPaid ? '✓ Depósito pagado' : '⚠ Depósito no pagado') + '</span>' : '') +
-        b.carts.map(function(c) { return '<span class="tag tag-cart">' + c + '</span>'; }).join('') +
+  var now = new Date();
+  var thisMonth = now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0');
+
+  var total = bookings.length;
+  var upcoming = bookings.filter(function(b){ return b.date >= t; }).length;
+  var unpaidCount = bookings.filter(function(b){ return b.deposit && !b.depositPaid; }).length;
+  var totalRevenue = bookings.reduce(function(s,b){ return s + (b.totalPrice||0); }, 0);
+  var totalCollected = bookings.reduce(function(s,b){ return s + (b.depositPaid ? (b.deposit||0) : 0); }, 0);
+  var totalPending = bookings.reduce(function(s,b){ return s + (!b.depositPaid && b.deposit ? b.deposit : 0) + (b.remaining||0); }, 0);
+  var thisMonthBookings = bookings.filter(function(b){ return b.date && b.date.startsWith(thisMonth); });
+  var thisMonthRevenue = thisMonthBookings.reduce(function(s,b){ return s + (b.totalPrice||0); }, 0);
+
+  var serviceCounts = {};
+  bookings.forEach(function(b){ if(b.service){ serviceCounts[b.service]=(serviceCounts[b.service]||0)+1; } });
+  var topService = Object.keys(serviceCounts).sort(function(a,b){ return serviceCounts[b]-serviceCounts[a]; })[0] || '—';
+
+  var cartCounts = {};
+  bookings.forEach(function(b){ (b.carts||[]).forEach(function(c){ cartCounts[c]=(cartCounts[c]||0)+1; }); });
+  var topCart = Object.keys(cartCounts).sort(function(a,b){ return cartCounts[b]-cartCounts[a]; })[0] || '—';
+
+  var monthCounts = {};
+  bookings.forEach(function(b){
+    if(!b.date) return;
+    var mk = b.date.substring(0,7);
+    monthCounts[mk]=(monthCounts[mk]||0)+1;
+  });
+  var monthKeys = Object.keys(monthCounts).sort().slice(-6);
+  var maxCount = Math.max.apply(null, monthKeys.map(function(k){ return monthCounts[k]; })) || 1;
+
+  var unpaidBookings = bookings.filter(function(b){ return b.deposit && !b.depositPaid; })
+    .sort(function(a,b){ return (a.date||'') > (b.date||'') ? 1 : -1; });
+
+  document.getElementById('statsRow').innerHTML = '';
+  document.getElementById('bookingsList').innerHTML =
+    '<div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-bottom:12px;">' +
+      statCard('📋', total, 'Total citas') +
+      statCard('📅', upcoming, 'Próximas') +
+      statCard('💰', '$' + totalRevenue.toFixed(0), 'Ingresos totales') +
+      statCard('⚠️', unpaidCount, 'Dep. pendientes', unpaidCount > 0 ? 'var(--red)' : null) +
+    '</div>' +
+
+    '<div class="card" style="margin-bottom:12px;">' +
+      '<div class="section-label">Este mes</div>' +
+      '<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;">' +
+        miniStat(thisMonthBookings.length, 'Citas') +
+        miniStat('$'+thisMonthRevenue.toFixed(0), 'Esperado') +
+        miniStat('$'+totalCollected.toFixed(0), 'Cobrado') +
       '</div>' +
-      (b.guests ? '<div class="bk-detail">👥 ' + b.guests + ' invitados</div>' : '') +
-      (b.address ? '<div class="bk-detail">📍 ' + b.address + '</div>' : '') +
-      (b.setting ? '<div class="bk-detail">🏠 ' + (b.setting === 'indoor' ? 'Interior' : 'Al aire libre') + '</div>' : '') +
-      (b.phone ? '<div class="bk-detail">📞 ' + b.phone + '</div>' : '') +
-      (b.email ? '<div class="bk-detail">✉ ' + b.email + '</div>' : '') +
-      (b.totalPrice ? '<div class="bk-detail">💰 Total: $' + b.totalPrice.toFixed(2) + (b.deposit ? ' · Depósito: $' + b.deposit.toFixed(2) : '') + (b.remaining ? ' · <strong style="color:var(--red)">Saldo: $' + b.remaining.toFixed(2) + '</strong>' : '') + '</div>' : '') +
-      (b.notes ? '<div class="bk-note">"' + b.notes + '"</div>' : '') +
-      '<div class="bk-actions">' +
-        (b.deposit ? '<button class="bk-btn ' + (b.depositPaid ? '' : 'success') + '" onclick="toggleDepositPaid(' + b.id + ')">' + (b.depositPaid ? 'Marcar no pagado' : 'Marcar pagado ✓') + '</button>' : '') +
-        '<button class="bk-btn danger" onclick="deleteBooking(' + b.id + ')">Eliminar</button>' +
-      '</div></div>';
-  }).join('');
+    '</div>' +
+
+    '<div class="card" style="margin-bottom:12px;">' +
+      '<div class="section-label">Lo más popular</div>' +
+      '<div style="display:flex;gap:10px;">' +
+        '<div style="flex:1;background:var(--bg);border-radius:var(--radius-sm);padding:12px;text-align:center;">' +
+          '<div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">Servicio #1</div>' +
+          '<div style="font-size:13px;font-weight:700;color:var(--accent);">🎉 ' + topService + '</div>' +
+        '</div>' +
+        '<div style="flex:1;background:var(--bg);border-radius:var(--radius-sm);padding:12px;text-align:center;">' +
+          '<div style="font-size:11px;color:var(--text-muted);margin-bottom:4px;">Carrito #1</div>' +
+          '<div style="font-size:13px;font-weight:700;color:var(--accent);">🛒 ' + topCart + '</div>' +
+        '</div>' +
+      '</div>' +
+    '</div>' +
+
+    (monthKeys.length > 0 ?
+    '<div class="card" style="margin-bottom:12px;">' +
+      '<div class="section-label">Citas por mes</div>' +
+      '<div style="display:flex;align-items:flex-end;gap:6px;height:100px;">' +
+        monthKeys.map(function(k){
+          var pct = Math.round((monthCounts[k]/maxCount)*68);
+          var d = new Date(k+'-01T12:00:00');
+          var lbl = d.toLocaleDateString('es-MX',{month:'short'});
+          return '<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;">' +
+            '<div style="font-size:11px;color:var(--text-muted);font-weight:600;">' + monthCounts[k] + '</div>' +
+            '<div style="width:100%;background:var(--accent);border-radius:4px 4px 0 0;height:' + pct + 'px;min-height:4px;"></div>' +
+            '<div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;">' + lbl + '</div>' +
+          '</div>';
+        }).join('') +
+      '</div>' +
+    '</div>' : '') +
+
+    (unpaidBookings.length > 0 ?
+    '<div class="card" style="margin-bottom:12px;">' +
+      '<div class="section-label" style="color:var(--red);">⚠️ Depósitos pendientes</div>' +
+      unpaidBookings.map(function(b,i){
+        var d = b.date ? new Date(b.date+'T12:00:00') : null;
+        var dateStr = d ? d.toLocaleDateString('es-MX',{weekday:'short',month:'short',day:'numeric'}) : 'Sin fecha';
+        return '<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 0;border-bottom:' + (i<unpaidBookings.length-1?'1px solid var(--border)':'none') + ';">' +
+          '<div><div style="font-size:14px;font-weight:700;color:var(--text);">' + b.name + '</div><div style="font-size:12px;color:var(--text-muted);">' + dateStr + '</div></div>' +
+          '<div style="text-align:right;"><div style="font-size:14px;font-weight:700;color:var(--red);">$' + (b.deposit||0).toFixed(2) + '</div>' +
+          '<button class="bk-btn success" style="margin-top:4px;font-size:11px;padding:4px 10px;" onclick="toggleDepositPaid(' + b.id + ')">Marcar pagado ✓</button></div>' +
+        '</div>';
+      }).join('') +
+    '</div>' : '') +
+
+    (totalPending > 0 ?
+    '<div style="background:var(--red-light);border:1px solid rgba(224,85,85,0.3);border-radius:var(--radius-sm);padding:14px;display:flex;justify-content:space-between;align-items:center;">' +
+      '<div style="font-size:14px;font-weight:700;color:var(--red);">Total por cobrar</div>' +
+      '<div style="font-size:20px;font-weight:700;color:var(--red);">$' + totalPending.toFixed(2) + '</div>' +
+    '</div>' : '');
 }
 
-
-function toggleIng(el) {
-  el.classList.toggle('checked');
-  var cb = el.querySelector('.mat-cb');
-  cb.classList.toggle('on');
+function statCard(icon, value, label, color) {
+  return '<div style="background:var(--card);border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px;text-align:center;box-shadow:var(--shadow);">' +
+    '<div style="font-size:20px;margin-bottom:4px;">' + icon + '</div>' +
+    '<div style="font-size:22px;font-weight:700;color:' + (color||'var(--text)') + ';font-family:DM Serif Display,serif;">' + value + '</div>' +
+    '<div style="font-size:11px;color:var(--text-muted);margin-top:2px;font-weight:500;">' + label + '</div>' +
+  '</div>';
 }
 
-function deleteIng(e, btn) {
-  e.stopPropagation();
-  btn.parentElement.remove();
-}
-
-function addIngredient() {
-  var input = document.getElementById('newIngredient');
-  var name = input.value.trim();
-  if (!name) return;
-  var list = document.getElementById('ingredientsList');
-  var item = document.createElement('div');
-  item.className = 'ing-item';
-  item.onclick = function() { toggleIng(this); };
-  item.innerHTML = '<div class="mat-cb"><span class="mat-cb-check">✓</span></div><span class="mat-name">' + name + '</span><button class="mat-del" onclick="deleteIng(event,this)">×</button>';
-  list.appendChild(item);
-  input.value = '';
+function miniStat(value, label) {
+  return '<div style="background:var(--bg);border-radius:var(--radius-sm);padding:10px;text-align:center;">' +
+    '<div style="font-size:18px;font-weight:700;color:var(--text);">' + value + '</div>' +
+    '<div style="font-size:11px;color:var(--text-muted);margin-top:2px;">' + label + '</div>' +
+  '</div>';
 }
 
 document.getElementById('date').value = todayStr();
 updateCount();
-
-
-
-function getCheckedMaterials() {
-  var items = document.querySelectorAll('.material-item');
-  var checked = [], unchecked = [];
-  items.forEach(function(el) {
-    var name = el.querySelector('.mat-name');
-    if (!name) return;
-    if (el.classList.contains('checked')) checked.push('✓ ' + name.textContent);
-    else unchecked.push('☐ ' + name.textContent);
-  });
-  return unchecked.concat(checked);
-}
-
-function getCheckedIngredients() {
-  var items = document.querySelectorAll('.ing-item');
-  var checked = [], unchecked = [];
-  items.forEach(function(el) {
-    var name = el.querySelector('.mat-name');
-    if (!name) return;
-    if (el.classList.contains('checked')) checked.push('✓ ' + name.textContent);
-    else unchecked.push('☐ ' + name.textContent);
-  });
-  return unchecked.concat(checked);
-}
-
-function buildFullSummary(d) {
-  var lines = [];
-  lines.push('🛒 ENCHILADOS SNACK BAR');
-  lines.push('');
-  lines.push('Hola ' + d.name.split(' ')[0] + '! Aquí están los detalles de tu reservación:');
-  lines.push('');
-  lines.push('📅 Fecha: ' + fmtDate(d.date, d.timeInicio, d.timeFin));
-  if (d.service) lines.push('🎉 Servicio: ' + d.service);
-  if (d.carts.length) lines.push('🛒 Carritos: ' + d.carts.join(', '));
-  if (d.address) lines.push('📍 Lugar: ' + d.address);
-  if (d.setting) lines.push('🏠 Ambiente: ' + (d.setting === 'indoor' ? 'Interior' : 'Al aire libre'));
-  if (d.guests) lines.push('👥 Invitados: ' + d.guests);
-  lines.push('');
-  if (d.totalPrice) lines.push('💰 Total del paquete: $' + d.totalPrice.toFixed(2));
-  if (d.deposit) lines.push('💵 Depósito: $' + d.deposit.toFixed(2) + (d.depositPaid ? ' ✓ Pagado' : ' — Pendiente'));
-  if (d.remaining) lines.push('🔴 Saldo restante: $' + d.remaining.toFixed(2));
-  if (d.notes) { lines.push(''); lines.push('📝 Notas: ' + d.notes); }
-  lines.push('');
-  lines.push('¡Gracias por tu reservación! 💕');
-  lines.push('— Enchilados Snack Bar');
-  return lines.join('\n');
-}
-
-function prepareShareSms(e) {
-  var d = getForm();
-  var phone = document.getElementById('sharePhone').value.replace(/\D/g,'');
-  var body = encodeURIComponent(buildFullSummary(d));
-  var isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
-  var sep = isIos ? '&' : '?';
-  document.getElementById('shareSmsLink').href = 'sms:' + phone + sep + 'body=' + body;
-}
-
-function prepareShareEmail(e) {
-  var d = getForm();
-  var to = document.getElementById('shareEmail').value;
-  var subj = encodeURIComponent('Resumen: ' + d.name + (d.service ? ' — ' + d.service : '') + ' | ' + fmtDate(d.date, d.timeInicio, d.timeFin));
-  var body = encodeURIComponent(buildFullSummary(d));
-  var cc = d.email ? '&cc=' + encodeURIComponent(d.email) : '';
-  document.getElementById('shareEmailLink').href = 'mailto:' + encodeURIComponent(to) + '?subject=' + subj + cc + '&body=' + body;
-}
-
-function toggleMaterial(el) {
-  el.classList.toggle('checked');
-  var cb = el.querySelector('.mat-cb');
-  cb.classList.toggle('on');
-}
-
-function deleteMaterial(e, btn) {
-  e.stopPropagation();
-  btn.parentElement.remove();
-}
-
-function addMaterial() {
-  var input = document.getElementById('newMaterial');
-  var name = input.value.trim();
-  if (!name) return;
-  var list = document.getElementById('materialsList');
-  var item = document.createElement('div');
-  item.className = 'material-item';
-  item.onclick = function() { toggleMaterial(this); };
-  item.innerHTML = '<div class="mat-cb"><span class="mat-cb-check">✓</span></div><span class="mat-name">' + name + '</span><button class="mat-del" onclick="deleteMaterial(event,this)">×</button>';
-  list.appendChild(item);
-  input.value = '';
-}
-
-function resetMaterials() {
-  if (!confirm('¿Reiniciar la lista de materiales?')) return;
-  var items = [
-    '☂️ Sombrilla','🪨 Base de sombrilla','⛺ Canopy',
-    '🌀 Ventiladores','🔌 Extensiones eléctricas','🪧 Letreros',
-    '💡 Luces','🥤 Vasos','🍴 Utensilios','🛞 Diablito'
-  ];
-  var list = document.getElementById('materialsList');
-  list.innerHTML = items.map(function(name) {
-    return '<div class="material-item" onclick="toggleMaterial(this)"><div class="mat-cb"><span class="mat-cb-check">✓</span></div><span class="mat-name">' + name + '</span><button class="mat-del" onclick="deleteMaterial(event,this)">×</button></div>';
-  }).join('');
-}
-
 </script>
 </body>
 </html>
